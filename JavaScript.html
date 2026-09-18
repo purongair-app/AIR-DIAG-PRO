@@ -1,0 +1,525 @@
+<script>
+    var uploadedFilesLog = [];
+    try {
+        var storedFiles = window.localStorage.getItem('air_diag_uploaded_files');
+        if (storedFiles) uploadedFilesLog = JSON.parse(storedFiles);
+    } catch(e) {}
+
+    // โหลดรายชื่อยี่ห้อแอร์จาก Google Sheets มาใส่ใน Dropdown อัตโนมัติ
+    function loadAirBrandsToDropdowns() {
+        google.script.run
+            .withSuccessHandler(function(brands) {
+                var searchSelect = document.getElementById('search-brand');
+                var formSelect = document.getElementById('dev-brand');
+                
+                var optionsHtml = brands.map(b => `<option value="${b}">${b}</option>`).join('');
+                
+                if (searchSelect) searchSelect.innerHTML = optionsHtml;
+                if (formSelect) formSelect.innerHTML = optionsHtml;
+            })
+            .withFailureHandler(function(err) {
+                console.log("ไม่สามารถโหลดรายชื่อยี่ห้อแอร์ได้: " + err.message);
+            })
+            .getAirBrands();
+    }
+
+    // ฟังก์ชันสลับหน้าจอหลัก (ป้องกันการกดไม่ตอบสนอง)
+    function switchView(viewName) {
+        var views = ['home', 'form', 'search', 'flow', 'settings', 'history'];
+        
+        views.forEach(v => {
+            var el = document.getElementById('view-' + v);
+            if (el) {
+                el.classList.add('hidden');
+            }
+            var nav = document.getElementById('nav-' + v);
+            if (nav) {
+                nav.className = "flex flex-col items-center space-y-1 text-slate-400 hover:text-sky-400 transition";
+            }
+        });
+
+        var targetView = document.getElementById('view-' + viewName);
+        if (targetView) {
+            targetView.classList.remove('hidden');
+        }
+
+        var targetNav = document.getElementById('nav-' + viewName);
+        if (targetNav) {
+            targetNav.className = "flex flex-col items-center space-y-1 text-sky-400 font-bold transition";
+        }
+
+        if (viewName === 'history') {
+            loadRepairHistory();
+        }
+    }
+
+    // โหลดประวัติงานซ่อมจาก Cloud มาแสดงผลเป็นการ์ดรายละเอียดสูง
+    function loadRepairHistory() {
+        var container = document.getElementById('history-list');
+        if (!container) return;
+
+        container.innerHTML = '<p class="text-xs text-sky-400 text-center py-6">กำลังดึงข้อมูลจาก Cloud...</p>';
+
+        google.script.run
+            .withSuccessHandler(function(historyList) {
+                if (!historyList || historyList.length === 0) {
+                    container.innerHTML = '<p class="text-xs text-slate-400 text-center py-6">ยังไม่มีประวัติการบันทึกบน Cloud</p>';
+                    return;
+                }
+
+                container.innerHTML = historyList.map(h => `
+                    <div class="bg-slate-900 border border-slate-700 rounded-xl p-3.5 space-y-3 shadow-md relative">
+                        <div class="flex items-start justify-between border-b border-slate-800 pb-2">
+                            <div>
+                                <div class="font-bold text-white text-sm">${h.customer}</div>
+                                <div class="text-[10px] text-slate-400">${h.date}</div>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <span class="text-xs bg-purple-950 text-purple-300 border border-purple-800 px-2.5 py-1 rounded-lg font-semibold">${h.brand}</span>
+                                <button onclick="confirmAndDelete(${h.rowIndex})" class="bg-red-900/40 hover:bg-red-800 text-red-300 border border-red-700 p-1.5 rounded-lg text-xs transition" title="ลบเคสนี้">🗑️</button>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-2 gap-2 bg-slate-800/60 p-2.5 rounded-lg border border-slate-800 text-xs">
+                            <div>
+                                <span class="text-[10px] text-slate-400 block">รุ่นสินค้า:</span>
+                                <span class="font-bold text-sky-400">${h.model || '-'}</span>
+                            </div>
+                            <div>
+                                <span class="text-[10px] text-slate-400 block">โค้ดอาการเสีย:</span>
+                                <span class="font-bold text-red-400">${h.symptom || '-'}</span>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-3 gap-1.5 text-center text-[11px] bg-slate-800/40 p-2 rounded-lg border border-slate-800">
+                            <div>
+                                <span class="text-[9px] text-slate-400 block">แรงดันน้ำยา</span>
+                                <span class="font-bold text-amber-400">${h.psi || '-'} <span class="text-[9px] font-normal text-slate-400">PSI</span></span>
+                            </div>
+                            <div>
+                                <span class="text-[9px] text-slate-400 block">กระแสไฟ</span>
+                                <span class="font-bold text-emerald-400">${h.amp || '-'} <span class="text-[9px] font-normal text-slate-400">A</span></span>
+                            </div>
+                            <div>
+                                <span class="text-[9px] text-slate-400 block">แรงดันไฟฟ้า</span>
+                                <span class="font-bold text-cyan-400">${h.volt || '-'} <span class="text-[9px] font-normal text-slate-400">V</span></span>
+                            </div>
+                        </div>
+
+                        <div class="space-y-1.5 text-[11px] bg-slate-800/40 p-2.5 rounded-lg border border-slate-800">
+                            <div class="text-slate-300 font-semibold flex items-center space-x-1">
+                                <span>🌡️ อุณหภูมิคอยล์เย็น (°C):</span>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2 pl-2 text-[10px]">
+                                <div>หน้าช่องลมออก: <span class="text-sky-300 font-bold">${h.tinFront || '-'}</span></div>
+                                <div>หลังช่องลมเข้า: <span class="text-sky-300 font-bold">${h.tinBack || '-'}</span></div>
+                            </div>
+                            <div class="text-slate-300 font-semibold flex items-center space-x-1 pt-1">
+                                <span>☀️ อุณหภูมิคอยล์ร้อน (°C):</span>
+                            </div>
+                            <div class="grid grid-cols-2 gap-2 pl-2 text-[10px]">
+                                <div>หน้าช่องลมออก: <span class="text-amber-300 font-bold">${h.toutFront || '-'}</span></div>
+                                <div>หลังช่องลมเข้า: <span class="text-amber-300 font-bold">${h.toutBack || '-'}</span></div>
+                            </div>
+                        </div>
+
+                        <div class="text-[11px] text-slate-400 space-y-0.5 border-t border-slate-800 pt-2">
+                            <div>ผู้บันทึก: <span class="text-slate-200 font-semibold">${h.techName || '-'}</span> (โทร: <span class="text-slate-200">${h.techPhone || '-'}</span>)</div>
+                            <div>โน้ต: <span class="text-slate-300 italic">${h.notes || '-'}</span></div>
+                        </div>
+                    </div>
+                `).join('');
+            })
+            .withFailureHandler(function(err) {
+                container.innerHTML = `<p class="text-xs text-red-400 text-center py-6">เกิดข้อผิดพลาด: ${err.message}</p>`;
+            })
+            .getRepairHistoryFromSheet();
+    }
+
+    // ฟังก์ชันยืนยันและสั่งลบข้อมูลเคส
+    function confirmAndDelete(rowIndex) {
+        var pin = document.getElementById('delete-pin').value;
+        if (!pin) {
+            alert('กรุณากรอกรหัสผ่านยืนยันการลบ (Admin PIN) ด้านบนก่อนครับ');
+            return;
+        }
+
+        if (!confirm('⚠️ คุณต้องการลบข้อมูลประวัติเคสนี้ออกจาก Google Sheets ใช่หรือไม่?')) {
+            return;
+        }
+
+        google.script.run
+            .withSuccessHandler(function(res) {
+                showSuccessModal("ลบสำเร็จ!", "ข้อมูลประวัติถูกลบออกจาก Cloud เรียบร้อยแล้ว");
+                document.getElementById('delete-pin').value = "";
+                loadRepairHistory();
+            })
+            .withFailureHandler(function(err) {
+                alert('ลบไม่สำเร็จ: ' + err.message);
+            })
+            .deleteRepairHistoryRow(pin, rowIndex);
+    }
+
+    function playSuccessSound() {
+        try {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(587.33, audioCtx.currentTime);
+            osc.frequency.setValueAtTime(880, audioCtx.currentTime + 0.15);
+            
+            gain.gain.setValueAtTime(0.1, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+            
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            
+            osc.start();
+            osc.stop(audioCtx.currentTime + 0.4);
+        } catch(e) {}
+    }
+
+    function showSuccessModal(title, desc) {
+        playSuccessSound();
+        document.getElementById('modal-title').innerText = title;
+        document.getElementById('modal-desc').innerText = desc;
+        document.getElementById('custom-modal').classList.remove('hidden');
+    }
+
+    function closeModal() {
+        document.getElementById('custom-modal').classList.add('hidden');
+    }
+
+    function downloadTemplate() {
+        var csvContent = "data:text/csv;charset=utf-8,\uFEFF" + 
+            "ยี่ห้อแอร์,รหัสข้อผิดพลาด,ความหมาย / อาการ,จุดที่ต้องตรวจเช็ก,วิธีแก้ไขเบื้องต้น\n" +
+            "Daikin,U4,ความผิดพลาดในการส่งสัญญาณ,สายสัญญาณ / บอร์ด PCB,1. ตัดไฟ 2. เช็กสาย F1 F2\n" +
+            "Mitsubishi,E6,การสื่อสารระหว่างคอยล์ผิดพลาด,สาย S1 S2 S3,1. เช็กสายไฟ 3 เส้น";
+        
+        var encodedUri = encodeURI(csvContent);
+        var link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", "ErrorCode_Template.csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    function downloadDiagnosisTemplate() {
+        var csvContent = "data:text/csv;charset=utf-8,\uFEFF" + 
+            "กลุ่มอาการ (Category),หัวข้อหลัก (Topic/Step),จุดที่ต้องตรวจสอบ / วัดค่า (Checkpoints),คำแนะนำ / วิธีแก้ไข (Guidelines),ข้อควรระวัง (Cautions)\n" +
+            "แอร์ไม่เย็น,คอยล์ร้อนทำงานไหม,ฟังเสียงคอมเพรสเซอร์ / พัดลมคอยล์ร้อน,ตรวจสอบกระแสไฟและแรงดันน้ำยา,⚠️ ระวังไฟฟ้าลัดวงจร\n" +
+            "แอร์ตัดบ่อย,การระบายความร้อน,เช็กฟินคอยล์ร้อนสกปรกหรือตากแดดจัด,ล้างทำความสะอาดแผงคอยล์,⚠️ ระวังแผงคอยล์ล้ม";
+        
+        var encodedUri = encodeURI(csvContent);
+        var link = document.createElement("a");
+        link.setAttribute("href", encodedUri);
+        link.setAttribute("download", "Diagnosis_Template.csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+    }
+
+    function uploadSettingsFile() {
+        var pin = document.getElementById('admin-pin').value;
+        var fileInput = document.getElementById('settings-file');
+
+        if (!pin) {
+            alert('กรุณากรอกรหัสผ่านความปลอดภัย (Admin PIN) ก่อนอัปโหลดครับ');
+            return;
+        }
+        if (fileInput.files.length === 0) {
+            alert('กรุณาเลือกไฟล์เอกสาร CSV ก่อนอัปโหลดครับ');
+            return;
+        }
+
+        var file = fileInput.files[0];
+        var fileName = file.name;
+
+        if (uploadedFilesLog.includes(fileName)) {
+            alert('❌ ป้องกันการอัปโหลดไฟล์ซ้ำ: ไฟล์ชื่อ "' + fileName + '" เคยถูกอัปโหลดเข้าสู่ระบบไปแล้วครับ!');
+            return;
+        }
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var text = e.target.result;
+            var lines = text.split("\n");
+            var parsedData = [];
+
+            for (var i = 1; i < lines.length; i++) {
+                var line = lines[i].trim();
+                if (line) {
+                    var cols = line.split(",");
+                    var cleanCols = cols.map(c => c.replace(/^["']|["']$/g, "").trim());
+                    parsedData.push(cleanCols);
+                }
+            }
+
+            if (parsedData.length === 0) {
+                alert('ไม่พบข้อมูลภายในไฟล์ หรือรูปแบบไฟล์ไม่ถูกต้อง');
+                return;
+            }
+
+            google.script.run
+                .withSuccessHandler(function(res) {
+                    uploadedFilesLog.push(fileName);
+                    try {
+                        window.localStorage.setItem('air_diag_uploaded_files', JSON.stringify(uploadedFilesLog));
+                    } catch(err) {}
+
+                    showSuccessModal("อัปโหลดสำเร็จ!", "ไฟล์เอกสารรหัสข้อผิดพลาดถูกบันทึกเข้า Google Sheets เรียบร้อยแล้ว");
+                    fileInput.value = "";
+                    document.getElementById('admin-pin').value = "";
+                    loadAirBrandsToDropdowns();
+                })
+                .withFailureHandler(function(err) {
+                    alert('เกิดข้อผิดพลาด: ' + err.message);
+                })
+                .uploadErrorCodeFile(pin, parsedData);
+        };
+
+        reader.readAsText(file, "UTF-8");
+    }
+
+    function uploadDiagnosisFile() {
+        var pin = document.getElementById('admin-pin').value;
+        var fileInput = document.getElementById('diagnosis-file');
+
+        if (!pin) {
+            alert('กรุณากรอกรหัสผ่านความปลอดภัย (Admin PIN) ก่อนอัปโหลดครับ');
+            return;
+        }
+        if (fileInput.files.length === 0) {
+            alert('กรุณาเลือกไฟล์เอกสาร CSV วิเคราะห์อาการเสียก่อนครับ');
+            return;
+        }
+
+        var file = fileInput.files[0];
+        var reader = new FileReader();
+        
+        reader.onload = function(e) {
+            var text = e.target.result;
+            var lines = text.split("\n");
+            var parsedData = [];
+
+            for (var i = 1; i < lines.length; i++) {
+                var line = lines[i].trim();
+                if (line) {
+                    var cols = line.split(",");
+                    var cleanCols = cols.map(c => c.replace(/^["']|["']$/g, "").trim());
+                    parsedData.push(cleanCols);
+                }
+            }
+
+            if (parsedData.length === 0) {
+                alert('ไม่พบข้อมูลภายในไฟล์ หรือรูปแบบไฟล์ไม่ถูกต้อง');
+                return;
+            }
+
+            google.script.run
+                .withSuccessHandler(function(res) {
+                    showSuccessModal("อัปโหลดสำเร็จ!", "สร้างชีทใหม่และบันทึกเอกสารวิเคราะห์อาการเสียเรียบร้อยแล้ว");
+                    fileInput.value = "";
+                    document.getElementById('admin-pin').value = "";
+                })
+                .withFailureHandler(function(err) {
+                    alert('เกิดข้อผิดพลาด: ' + err.message);
+                })
+                .uploadDiagnosisDocFile(pin, parsedData);
+        };
+
+        reader.readAsText(file, "UTF-8");
+    }
+
+    // ฐานข้อมูลสเต็ปการตรวจเช็กทีละขั้น (Flow วิเคราะห์อาการเสีย)
+    const flowStepsData = {
+        1: [
+            {
+                title: "คอยล์ร้อน (Outdoor Unit) ทำงานหรือไม่?",
+                points: ["ฟังเสียงคอมเพรสเซอร์", "ดูพัดลมคอยล์ร้อน"]
+            },
+            {
+                title: "ตรวจสอบแรงดันน้ำยา (PSI) ในระบบ",
+                points: ["ต่อเกจวัดน้ำยา R32 / R410A", "ตรวจสอบว่าแรงดันอยู่ในเกณฑ์ปกติ (130-150 PSI)"]
+            }
+        ],
+        2: [
+            {
+                title: "แผงระบายความร้อนคอยล์ร้อนสกปรกหรือไม่?",
+                points: ["ตรวจสอบฟินคอยล์ระบายความร้อนภายนอก", "เช็กสิ่งกีดขวางทางลมระบายความร้อน"]
+            },
+            {
+                title: "ตรวจสอบกระแสไฟฟ้า (Amp) เกินพิกัดหรือไม่?",
+                points: ["ใช้แคลมป์มิเตอร์วัดกระแสไฟคอมเพรสเซอร์", "เทียบกับค่าเนมเพลตที่ตัวเครื่อง"]
+            }
+        ],
+        3: [
+            {
+                title: "ท่อน้ำทิ้งอุดตันหรือเมือกสะสมหรือไม่?",
+                points: ["ตรวจสอบปลายท่อน้ำทิ้งภายนอกอาคาร", "เช็กถาดรองน้ำทิ้งคอยล์เย็นว่าน้ำล้นหรือไม่"]
+            }
+        ],
+        4: [
+            {
+                title: "ใบพัดโพรงกระรอกหรือมอเตอร์พัดลมมีปัญหาหรือไม่?",
+                points: ["ตรวจสอบใบพัดแตกหักหรือมีสิ่งแปลกปลอม", "ฟังเสียงบูชหรือลูกปืนมอเตอร์พัดลม"]
+            }
+        ]
+    };
+
+    let currentFlowId = 1;
+    let currentStepIndex = 0;
+
+    function onSymptomSelect(val) {
+        if (!val) return;
+        currentFlowId = parseInt(val);
+        currentStepIndex = 0;
+        renderFlowStep();
+    }
+
+    function renderFlowStep() {
+        var menuList = document.getElementById('flow-menu-list');
+        var container = document.getElementById('flow-step-container');
+        
+        if (!menuList || !container) return;
+
+        menuList.classList.add('hidden');
+        container.classList.remove('hidden');
+
+        var steps = flowStepsData[currentFlowId];
+        if (!steps || currentStepIndex >= steps.length) {
+            container.innerHTML = `
+                <div class="p-4 bg-slate-900 border border-emerald-500 rounded-xl text-center space-y-3">
+                    <div class="text-2xl">🎉</div>
+                    <div class="font-bold text-emerald-400 text-sm">สิ้นสุดขั้นตอนการวิเคราะห์อาการเสีย</div>
+                    <p class="text-xs text-slate-300">หากยังพบปัญหา แนะนำให้ตรวจสอบคู่มือศูนย์บริการเพิ่มเติม</p>
+                    <button onclick="resetFlow()" class="w-full bg-sky-600 text-white py-2 rounded-lg font-bold text-xs">← กลับไปเลือกอาการอื่น</button>
+                </div>
+            `;
+            return;
+        }
+
+        var step = steps[currentStepIndex];
+        var pointsHtml = step.points.map(p => `<li>• ${p}</li>`).join('');
+        var symptomNames = {
+            1: "1. แอร์ไม่เย็น / มีแต่ลม",
+            2: "2. แอร์ตัดบ่อย / คอมเพรสเซอร์ตัด",
+            3: "3. น้ำรั่ว / น้ำล้นถาดคอยล์เย็น",
+            4: "4. มีเสียงดังผิดปกติ / พัดลมติดขัด"
+        };
+
+        container.innerHTML = `
+            <div class="bg-slate-900 border border-slate-700 rounded-xl p-4 space-y-3">
+                <div class="flex items-center justify-between border-b border-slate-800 pb-2">
+                    <span class="font-bold text-emerald-400 text-xs">${symptomNames[currentFlowId]}</span>
+                    <span class="text-[10px] bg-slate-800 text-slate-300 px-2.5 py-1 rounded border border-slate-700">ขั้นตอน: step${currentStepIndex + 1}</span>
+                </div>
+                <div class="font-bold text-white text-sm pt-1">${step.title}</div>
+                <div class="bg-slate-800/80 p-3 rounded-lg border border-slate-700 space-y-1 text-xs">
+                    <span class="text-slate-400 font-bold block">จุดที่ต้องสังเกต/วัดค่า:</span>
+                    <ul class="pl-2 space-y-1 text-slate-300">${pointsHtml}</ul>
+                </div>
+                <div class="grid grid-cols-2 gap-2 pt-1">
+                    <button onclick="handleFlowAnswer('pass')" class="bg-emerald-600 hover:bg-emerald-500 text-white py-2.5 rounded-lg font-bold text-xs transition text-center shadow">ใช่ / ผ่านจุดนี้</button>
+                    <button onclick="handleFlowAnswer('fail')" class="bg-red-600 hover:bg-red-500 text-white py-2.5 rounded-lg font-bold text-xs transition text-center shadow">ไม่ / พบปัญหา</button>
+                </div>
+                <button onclick="resetFlow()" class="w-full bg-slate-800 text-slate-400 py-2 rounded-lg text-xs hover:text-white transition text-center">← กลับไปเลือกอาการอื่น</button>
+            </div>
+        `;
+    }
+
+    function handleFlowAnswer(answer) {
+        if (answer === 'fail') {
+            alert('⚠️ ตรวจพบจุดที่มีปัญหา! แนะนำให้ทำการซ่อมแซมหรือเปลี่ยนอะไหล่ในจุดดังกล่าว');
+        }
+        currentStepIndex++;
+        renderFlowStep();
+    }
+
+    function resetFlow() {
+        var menuList = document.getElementById('flow-menu-list');
+        var container = document.getElementById('flow-step-container');
+        var dropdown = document.getElementById('symptom-dropdown');
+        if (dropdown) dropdown.selectedIndex = 0;
+        if (menuList) menuList.classList.remove('hidden');
+        if (container) container.classList.add('hidden');
+    }
+
+    function executeSearch() {
+        var brand = document.getElementById('search-brand').value;
+        var code = document.getElementById('search-code').value.trim().toUpperCase();
+        var resultBox = document.getElementById('search-result');
+
+        if (!code) {
+            alert('กรุณากรอกรหัส Error Code ก่อนครับ');
+            return;
+        }
+
+        resultBox.innerHTML = '<div class="text-center py-2 text-sky-400 font-bold">กำลังค้นหาข้อมูลจากระบบ Cloud...</div>';
+        resultBox.classList.remove('hidden');
+
+        google.script.run
+            .withSuccessHandler(function(info) {
+                if (!info) {
+                    resultBox.innerHTML = `
+                        <div class="font-bold text-red-400 text-sm">ผลการค้นหา: ${brand} - ${code}</div>
+                        <div class="font-semibold text-white">ไม่พบข้อมูลรหัสข้อผิดพลาดนี้ในฐานข้อมูล Google Sheets</div>
+                        <div><span class="font-bold text-slate-300">จุดตรวจเช็ก:</span><ul><li>• ตรวจสอบคู่มือศูนย์บริการของยี่ห้อ ${brand}</li></ul></div>
+                    `;
+                    return;
+                }
+
+                var pointsHtml = info.points.map(p => `<li>• ${p}</li>`).join('');
+                var stepsHtml = info.steps.map(s => `<li>${s}</li>`).join('');
+
+                resultBox.innerHTML = `
+                    <div class="font-bold text-sky-400 text-sm">ผลการค้นหา: ${brand} - ${code}</div>
+                    <div class="font-semibold text-white">${info.title}</div>
+                    <div><span class="font-bold text-slate-300">จุดตรวจเช็ก:</span><ul class="pl-2 text-slate-300">${pointsHtml}</ul></div>
+                    <div><span class="font-bold text-slate-300">วิธีแก้ไข:</span><ul class="pl-2 text-slate-300">${stepsHtml}</ul></div>
+                    <div class="text-red-300 font-bold bg-red-950/60 border border-red-800 p-1.5 rounded mt-2">${info.doDont}</div>
+                `;
+            })
+            .withFailureHandler(function(err) {
+                resultBox.innerHTML = `<div class="text-red-400 font-bold">เกิดข้อผิดพลาด: ${err.message}</div>`;
+            })
+            .searchErrorCodeFromSheet(brand, code);
+    }
+
+    function submitData(e) {
+        e.preventDefault();
+        var record = {
+            customer: document.getElementById('inp-customer').value,
+            brand: document.getElementById('dev-brand').value,
+            btu: document.getElementById('dev-btu').value,
+            symptom: document.getElementById('inp-symptom').value,
+            model: document.getElementById('dev-model').value,
+            ref: document.getElementById('dev-ref').value,
+            psi: document.getElementById('inp-psi').value,
+            amp: document.getElementById('inp-amp').value,
+            volt: document.getElementById('inp-volt').value,
+            tinFront: document.getElementById('inp-tin-front').value,
+            tinBack: document.getElementById('inp-tin-back').value,
+            toutFront: document.getElementById('inp-tout-front').value,
+            toutBack: document.getElementById('inp-tout-back').value,
+            techName: document.getElementById('inp-tech-name').value,
+            techPhone: document.getElementById('inp-tech-phone').value,
+            notes: document.getElementById('inp-notes').value,
+            date: new Date().toLocaleString('th-TH')
+        };
+
+        google.script.run
+            .withSuccessHandler(function(res) {
+                showSuccessModal("บันทึกสำเร็จ!", "ข้อมูลการตรวจวัดหน้างานถูกบันทึกขึ้น Cloud เรียบร้อยแล้ว");
+                e.target.reset();
+                switchView('history');
+            })
+            .withFailureHandler(function(err) {
+                alert('เกิดข้อผิดพลาด: ' + err.message);
+            })
+            .saveDataToSheet(record);
+    }
+</script>
